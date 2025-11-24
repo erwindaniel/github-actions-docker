@@ -7,11 +7,10 @@
 #  --name runner \
 #  runner-image
 
-
-# base
 # ...existing code...
 FROM ubuntu:22.04
 
+LABEL maintainer="IguaCorp"
 # set the github runner version
 ARG RUNNER_VERSION="2.329.0"
 ARG OC_CHANNEL="latest"
