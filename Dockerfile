@@ -10,19 +10,27 @@
 
 # base
 # ...existing code...
-FROM ubuntu:18.04
+FROM ubuntu:22.04
 
 # set the github runner version
 ARG RUNNER_VERSION="2.329.0"
+ARG OC_CHANNEL="latest"
+ARG HELM_INSTALL_SCRIPT="https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
+ARG YQ_VERSION="latest"
+ARG TKN_VERSION="latest"
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # update the base packages and add a non-sudo user
 RUN apt-get update -y && apt-get upgrade -y && useradd -m docker
 
 # install python and the packages the your code depends on along with jq so we can parse JSON
 # add additional packages as necessary
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    curl jq build-essential libssl-dev libffi-dev python3 python3-venv python3-dev python3-pip \
-    ca-certificates gnupg lsb-release tar gzip
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg2 lsb-release tar gzip jq git sudo libc6 \
+    python3 python3-venv unzip procps && \
+    rm -rf /var/lib/apt/lists/*
+
 
 # cd into the user directory, download and unzip the github actions runner
 RUN cd /home/docker && mkdir actions-runner && cd actions-runner \
@@ -35,11 +43,6 @@ RUN chown -R docker ~docker && /home/docker/actions-runner/bin/installdependenci
 # ---------------------------
 # Install oc, argocd, helm, tkn, yq
 # ---------------------------
-ARG OC_CHANNEL="latest"
-ARG HELM_INSTALL_SCRIPT="https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"
-ARG TKN_VERSION="latest"
-ARG YQ_VERSION="latest"
-
 RUN set -eux; \
     # oc (OpenShift client) - from mirror.openshift.com (contains oc binary)
     OC_TMPDIR="$(mktemp -d)"; \
@@ -62,8 +65,20 @@ RUN set -eux; \
     else \
       curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"; \
     fi; \
-    chmod +x /usr/local/bin/yq
-
+    chmod +x /usr/local/bin/yq;  \
+    # s2i (robust download: try GitHub API, fallback to generic download URL)
+    S2I_ASSET_URL=$(curl -sS https://api.github.com/repos/openshift/source-to-image/releases/latest | jq -r '.assets[]?.browser_download_url' | grep -Ei 'source-to-image.*(linux.*amd64|linux_amd64|linux-x86_64)' | head -n1 || true); \
+    if [ -z "$S2I_ASSET_URL" ]; then S2I_ASSET_URL="https://github.com/openshift/source-to-image/releases/latest/download/s2i"; fi; \
+    echo "Downloading s2i from: ${S2I_ASSET_URL}"; \
+    if printf '%s' "${S2I_ASSET_URL}" | grep -E '\.tar\.gz$|\.tgz$' >/dev/null 2>&1; then \
+      curl -fsSL -o /tmp/s2i.tar.gz "${S2I_ASSET_URL}"; \
+      tar -C /tmp -xzf /tmp/s2i.tar.gz; \
+      S2I_BIN=$(find /tmp -type f -name 's2i' -perm /111 | head -n1 || true); \
+      if [ -n "${S2I_BIN}" ]; then mv "${S2I_BIN}" /usr/local/bin/s2i && chmod +x /usr/local/bin/s2i; else echo "s2i binary not found inside archive" && exit 1; fi; \
+      rm -f /tmp/s2i.tar.gz; \
+    else \
+      curl -fsSL -o /usr/local/bin/s2i "${S2I_ASSET_URL}"; chmod +x /usr/local/bin/s2i; \
+    fi;
 # copy over the start.sh script
 COPY start.sh start.sh
 
